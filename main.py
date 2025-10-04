@@ -7,19 +7,19 @@ from io import BytesIO
 
 # Настройка логирования
 logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    format='%(asasctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
 
-# Токен бота (замените на ваш токен)
-BOT_TOKEN = os.getenv("BOT_TOKEN")
+# Токен бота из переменных окружения
+BOT_TOKEN = os.environ.get('BOT_TOKEN')
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик команды /start"""
     await update.message.reply_text(
         "Привет! Отправь мне один или несколько xlsx файлов.\n"
-        "Я извлеку данные из первого столбца (пропуская первую строку) "
+        "Я извлечу данные из первого столбца (пропуская первую строку) "
         "и создам txt файл с результатами."
     )
 
@@ -102,7 +102,8 @@ async def process_files(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         
         # Очищаем временные файлы и данные
-        os.remove(txt_filename)
+        if os.path.exists(txt_filename):
+            os.remove(txt_filename)
         context.user_data['xlsx_files'] = []
         
     except Exception as e:
@@ -119,8 +120,16 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Просто отправьте xlsx файлы боту, затем введите /process для получения результата."
     )
 
+async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработчик ошибок"""
+    logger.error(f"Ошибка: {context.error}")
+
 def main():
     """Основная функция"""
+    if not BOT_TOKEN:
+        logger.error("BOT_TOKEN не установлен!")
+        return
+    
     # Создаем приложение
     application = Application.builder().token(BOT_TOKEN).build()
     
@@ -130,9 +139,31 @@ def main():
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(MessageHandler(filters.Document.ALL, handle_document))
     
+    # Обработчик ошибок
+    application.add_error_handler(error_handler)
+    
     # Запускаем бота
-    print("Бот запущен...")
-    application.run_polling()
+    logger.info("Бот запущен...")
+    
+    # Для Render используем webhook или polling в зависимости от окружения
+    if os.environ.get('RENDER'):
+        # На Render используем webhook
+        port = int(os.environ.get('PORT', 8443))
+        webhook_url = os.environ.get('WEBHOOK_URL')
+        
+        if webhook_url:
+            application.run_webhook(
+                listen="0.0.0.0",
+                port=port,
+                url_path=BOT_TOKEN,
+                webhook_url=f"{webhook_url}/{BOT_TOKEN}"
+            )
+        else:
+            logger.warning("WEBHOOK_URL не установлен, используем polling")
+            application.run_polling()
+    else:
+        # Локально используем polling
+        application.run_polling()
 
 if __name__ == '__main__':
     main()
