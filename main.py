@@ -4,7 +4,6 @@ import pandas as pd
 import io
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
-from telegram.error import TelegramBadRequest
 
 # Настройка логирования
 logging.basicConfig(
@@ -14,7 +13,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Токен бота (установите в переменных окружения Render)
-BOT_TOKEN = os.getenv("BOT_TOKEN")
+BOT_TOKEN = os.environ.get('BOT_TOKEN')
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик команды /start"""
@@ -96,15 +95,18 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
                        f"📊 Извлечено записей: {len(column_data)}"
             )
             
-            # Удаляем сообщение о обработке
-            await processing_msg.delete()
-            
         except Exception as e:
             logger.error(f"Error processing file: {e}")
             await update.message.reply_text(
                 f"❌ Ошибка при обработке файла:\n{str(e)}"
             )
-            await processing_msg.delete()
+            
+        finally:
+            # Удаляем сообщение о обработке
+            try:
+                await processing_msg.delete()
+            except:
+                pass
             
     except Exception as e:
         logger.error(f"Error in handle_document: {e}")
