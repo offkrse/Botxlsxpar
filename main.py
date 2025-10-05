@@ -2,147 +2,92 @@ import os
 import logging
 import pandas as pd
 import io
-from telegram import Update
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+from aiogram import Bot, Dispatcher, Router, F
+from aiogram.types import Message, BufferedInputFile
+from aiogram.filters import Command
+from aiogram.enums import ParseMode
 
 # Настройка логирования
-logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO
-)
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Токен бота (установите в переменных окружения Render)
 BOT_TOKEN = os.environ.get('BOT_TOKEN')
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработчик команды /start"""
-    welcome_text = """
-🤖 Добро пожаловать в бот-парсер Excel файлов!
+bot = Bot(token=BOT_TOKEN)
+dp = Dispatcher()
+router = Router()
+dp.include_router(router)
 
-📊 **Как использовать:**
-1. Отправьте мне один или несколько Excel файлов (.xlsx, .xls)
-2. Я извлеку все данные из первого столбца (начиная со второй строки)
-3. Верну вам текстовый файл с результатом
+@router.message(Command("start"))
+async def cmd_start(message: Message):
+    text = """
+🤖 <b>Парсер Excel в TXT</b>
 
-⚠️ **Важно:** 
-- Файлы должны быть в формате Excel
-- Данные берутся из первого столбца, начиная со второй строки
-- Поддерживается обработка нескольких файлов одновременно
+Отправьте Excel файлы (.xlsx, .xls) - я извлеку данные из первого столбца и верну текстовый файл.
+
+<b>Особенности:</b>
+• Беру данные из первого столбца (со 2-й строки)
+• Поддерживаю множественную загрузку
+• Автоматически объединяю данные
 """
-    await update.message.reply_text(welcome_text)
+    await message.answer(text, parse_mode=ParseMode.HTML)
 
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработчик команды /help"""
-    help_text = """
-📖 **Помощь по использованию бота:**
+class ExcelProcessor:
+    def __init__(self):
+        self.all_data = []
+    
+    def process_file(self, file_bytes: bytes) -> int:
+        """Обрабатывает один файл, возвращает количество записей"""
+        df = pd.read_excel(io.BytesIO(file_bytes), header=None)
+        column_data = df.iloc[1:, 0].dropna().astype(str).tolist()
+        self.all_data.extend(column_data)
+        return len(column_data)
+    
+    def get_result_text(self) -> str:
+        """Возвращает объединенный текст"""
+        return "\n".join(self.all_data)
 
-Просто отправьте мне Excel файлы, и я:
-1. Извлеку все значения из первого столбца
-2. Пропущу первую строку (заголовок)
-3. Объединю данные из всех файлов
-4. Верну текстовый файл с результатом
+processor = ExcelProcessor()
 
-📁 **Поддерживаемые форматы:** .xlsx, .xls
-
-💡 **Совет:** Вы можете отправить несколько файлов сразу!
-"""
-    await update.message.reply_text(help_text)
-
-async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработчик документов"""
+@router.message(F.document)
+async def handle_excel_files(message: Message):
     try:
-        document = update.message.document
+        document = message.document
+        file_name = document.file_name or "file"
         
-        # Проверяем, что это Excel файл
-        file_extension = document.file_name.split('.')[-1].lower()
-        if file_extension not in ['xlsx', 'xls']:
-            await update.message.reply_text(
-                "❌ Пожалуйста, отправьте файл в формате Excel (.xlsx или .xls)"
-            )
+        if not file_name.lower().endswith(('.xlsx', '.xls')):
+            await message.answer("❌ Отправьте Excel файл (.xlsx или .xls)")
             return
         
-        # Отправляем сообщение о начале обработки
-        processing_msg = await update.message.reply_text(
-            f"⏳ Обрабатываю файл: {document.file_name}..."
+        processing_msg = await message.answer(f"⏳ Обрабатываю {file_name}...")
+        
+        # Скачиваем и обрабатываем файл
+        file = await bot.download(document)
+        file_bytes = await file.read()
+        
+        records_count = processor.process_file(file_bytes)
+        
+        # Создаем результат для этого файла
+        result_text = processor.get_result_text()
+        result_file = BufferedInputFile(
+            result_text.encode('utf-8'),
+            filename=f"result_{file_name.split('.')[0]}.txt"
         )
         
-        # Скачиваем файл
-        file = await context.bot.get_file(document.file_id)
-        file_bytes = await file.download_as_bytearray()
+        await message.answer_document(
+            document=result_file,
+            caption=f"✅ {file_name}\n📊 Записей: {records_count}\n📁 Всего: {len(processor.all_data)}"
+        )
         
-        # Обрабатываем файл
-        try:
-            df = pd.read_excel(io.BytesIO(file_bytes), header=None)
-            # Берём первый столбец, начиная со второй строки
-            column_data = df.iloc[1:, 0].dropna().astype(str).tolist()
-            
-            if not column_data:
-                await update.message.reply_text(
-                    "❌ В файле не найдено данных для обработки"
-                )
-                return
-            
-            # Создаем текстовый файл в памяти
-            text_content = "\n".join(column_data)
-            text_file = io.BytesIO(text_content.encode('utf-8'))
-            text_file.name = f"parsed_data_{document.file_name.split('.')[0]}.txt"
-            
-            # Отправляем результат
-            await update.message.reply_document(
-                document=text_file,
-                caption=f"✅ Обработан файл: {document.file_name}\n"
-                       f"📊 Извлечено записей: {len(column_data)}"
-            )
-            
-        except Exception as e:
-            logger.error(f"Error processing file: {e}")
-            await update.message.reply_text(
-                f"❌ Ошибка при обработке файла:\n{str(e)}"
-            )
-            
-        finally:
-            # Удаляем сообщение о обработке
-            try:
-                await processing_msg.delete()
-            except:
-                pass
-            
+        await processing_msg.delete()
+        
     except Exception as e:
-        logger.error(f"Error in handle_document: {e}")
-        await update.message.reply_text(
-            "❌ Произошла ошибка при обработке файла. Попробуйте еще раз."
-        )
+        logger.error(f"Error: {e}")
+        await message.answer(f"❌ Ошибка: {str(e)}")
 
-async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработчик ошибок"""
-    logger.error(f"Update {update} caused error {context.error}")
-    
-    try:
-        await update.message.reply_text(
-            "❌ Произошла непредвиденная ошибка. Попробуйте еще раз."
-        )
-    except:
-        pass
+async def main():
+    await dp.start_polling(bot)
 
-def main():
-    """Основная функция для запуска бота"""
-    if not BOT_TOKEN:
-        logger.error("BOT_TOKEN not found in environment variables!")
-        return
-    
-    # Создаем приложение
-    application = Application.builder().token(BOT_TOKEN).build()
-    
-    # Добавляем обработчики
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("help", help_command))
-    application.add_handler(MessageHandler(filters.Document.ALL, handle_document))
-    application.add_error_handler(error_handler)
-    
-    # Запускаем бота
-    logger.info("Bot is starting...")
-    application.run_polling()
-
-if __name__ == '__main__':
-    main()
+if __name__ == "__main__":
+    import asyncio
+    asyncio.run(main())
